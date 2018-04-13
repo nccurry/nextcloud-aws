@@ -1,0 +1,240 @@
+---
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Deploys single AZ OpenShift cluster into an existing VPC
+
+Parameters:
+
+  VpcId:
+    Type: String
+    Description: ID of VPC (e.g. vpc-2698fe4f)
+    Default: vpc-2698fe4e
+
+  SubnetId:
+    Type: String
+    Description: ID of subnet (e.g. subnet-da7caba1)
+    Default: subnet-da7caba0
+
+  AvailabilityZone:
+    Type: String
+    Description: Availability zone in which to create resources (e.g. us-east-1a)
+    Default: us-east-2b
+
+  SSHCidr:
+    Type: String
+    Description: Cidr range from which to allow SSH connections (e.g. 99.125.112.48/32)
+    Default: 99.125.112.47/32
+
+  AMIId:
+    Type: String
+    Description: ID of AMI to use for cluster nodes (e.g. ami-e1496384)
+    Default: ami-e1496384
+
+  InstanceType:
+    Type: String
+    Description: EC2 instance type (e.g. t2.nano)
+    Default: t2.micro
+
+  KeyPair:
+    Type: String
+    Description: EC2 Keypair to use for EC2 instance (e.g. my-keypair)
+    Default: test-nextcloud
+
+  DataDiskSize:
+    Type: String
+    Description: Size in GiB of disk containing data. Must be greater than 500 (e.g. 500)
+    Default: 500
+
+  DataDiskType:
+    Type: String
+    Description: Type of EBS disk to use for data (e.g. io1)
+    Default: sc1
+
+  DBPassword:
+    Type: String
+    Description: MySQL Root Password
+    Default: Zp4NUtLA$Ack0R1%3z7qqaVrD1q0JX
+
+  NextcloudDownloadUrl:
+    Type: String
+    Description: URL to nextcloud binary (e.g. https://download.nextcloud.com/server/releases/nextcloud-13.0.1.tar.bz2)
+    Default: https://download.nextcloud.com/server/releases/nextcloud-13.0.1.tar.bz2
+
+Metadata:
+  AWS::CloudFormation::Interface:
+    ParameterGroups:
+    - Label:
+        default: Environment
+      Parameters:
+      - VpcId
+      - SubnetId
+      - AvailabilityZone
+    - Label:
+        default: EC2 Information
+      Parameters:
+      - SSHCidr
+      - AMIId
+      - InstanceType
+      - KeyPair
+      - DataDiskSize
+      - DataDiskType
+      - DBPassword
+      - NextcloudDownloadUrl
+    ParameterLabels:
+      VpcId:
+        default: VPC ID
+      SubnetId:
+        default: Subnet ID
+      AvailabilityZone:
+        default: Availability Zone
+      SSHCidr:
+        default: SSH CIDR
+      AMIId:
+        default: AMI ID
+      InstanceType:
+        default: Instance Type
+      KeyPair:
+        default: Keypair
+      DataDiskSize:
+        default: Data Disk Size
+      DataDiskType:
+        default: Data Disk Type
+      DBPassword:
+        default: DB Password
+      NextcloudDownloadUrl:
+        default: Nextcloud URL
+
+Resources:
+
+  EC2InstanceSG:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: Master Node Security Group
+      VpcId: !Ref VpcId
+      SecurityGroupIngress:
+      - IpProtocol: tcp
+        FromPort: '443'
+        ToPort: '443'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '80'
+        ToPort: '80'
+        CidrIp: 0.0.0.0/0
+      - IpProtocol: tcp
+        FromPort: '22'
+        ToPort: '22'
+        CidrIp: !Ref SSHCidr
+      Tags:
+      - Key: Name
+        Value: !Ref "AWS::StackName"
+
+  ElasticIP:
+    Type: AWS::EC2::EIP
+    Properties:
+      InstanceId: !Ref EC2Instance
+
+  EC2Instance:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      AvailabilityZone: !Ref AvailabilityZone
+      BlockDeviceMappings:
+      - DeviceName: /dev/xvdb
+        Ebs:
+          DeleteOnTermination: false
+          Encrypted: True
+          VolumeSize: !Ref DataDiskSize
+          VolumeType: !Ref DataDiskType
+      ImageId: !Ref AMIId
+      InstanceInitiatedShutdownBehavior: stop
+      InstanceType: !Ref InstanceType
+      KeyName: !Ref KeyPair
+      SecurityGroupIds: [ !Ref EC2InstanceSG ]
+      SubnetId: !Ref SubnetId
+      Tags:
+      - Key: Name
+        Value: !Ref "AWS::StackName"
+      UserData:
+        'Fn::Base64':
+          !Sub |
+          #!/bin/bash
+          # https://docs.nextcloud.com/server/13/admin_manual/installation/source_installation.html
+
+          # Install packages
+          yum install -y deltarpm
+          yum install -y epel-release centos-release-scl wget vim lvm2 bzip2
+          yum install -y rh-mariadb102
+          yum install -y httpd24
+          yum install -y rh-php71-php rh-php71-php-common rh-php71-php-xml rh-php71-php-gd \
+              rh-php71-php-json rh-php71-php-mbstring rh-php71-php-process rh-php71-php-zip \
+              rh-php71-php-mysqlnd rh-php71-php-intl sclo-php71-php-mcrypt \
+              sclo-php71-php-imap sclo-php71-php-pecl-imagick libc-client
+          yum update -y
+
+          # Configure software collections
+          scl enable rh-php71 bash
+          echo '#!/bin/bash' >> /etc/profile.d/enablephp71.sh
+          echo 'source /opt/rh/rh-php71/enable' >> /etc/profile.d/enablephp71.sh
+          chmod 774 /etc/profile.d/enablephp71.sh
+
+          scl enable rh-mariadb102 bash
+          echo '#!/bin/bash' >> /etc/profile.d/enablemariadb102.sh
+          echo 'source /opt/rh/rh-mariadb102/enable' >> /etc/profile.d/enablemariadb102.sh
+          chmod 774 /etc/profile.d/enablemariadb102.sh
+
+          scl enable httpd24 bash
+          echo '#!/bin/bash' >> /etc/profile.d/enablehttpd24.sh
+          echo 'source /opt/rh/httpd24/enable' >> /etc/profile.d/enablehttpd24.sh
+          chmod 774 /etc/profile.d/enablehttpd24.sh
+
+          # Pull down nextcloud binaries
+          wget -O /tmp/nextcloud.tar.bz2 ${NextcloudDownloadUrl}
+          tar -xjf /tmp/nextcloud.tar.bz2 -C /opt/rh/httpd24/root/var/www/html
+
+          # Configure data logical volume
+          pvcreate /dev/xvdb
+          vgcreate nc /dev/xvdb
+          lvcreate -n data -l 100%FREE nc
+          mkfs -t ext4 /dev/mapper/nc-data
+          mkdir -p /opt/nextcloud/data
+          echo '/dev/mapper/nc-data /opt/nextcloud/data ext4 defaults 0 0' >> /etc/fstab
+          mount -a
+
+          # Set appropriate permissions
+          chown -R apache:apache /opt/rh/httpd24/root/var/www/html/nextcloud/
+          chown -R apache:apache /opt/nextcloud
+
+          # SELinux
+          #setsebool -P httpd_can_network_connect_db 1
+          #semanage fcontext -a -t httpd_sys_rw_content_t '/opt/nextcloud/data(/.*)?'
+          #semanage fcontext -a -t httpd_sys_rw_content_t '/opt/rh/httpd24/root/var/www/html/nextcloud/config(/.*)?'
+          #semanage fcontext -a -t httpd_sys_rw_content_t '/opt/rh/httpd24/root/var/www/html/nextcloud/apps(/.*)?'
+          #semanage fcontext -a -t httpd_sys_rw_content_t '/opt/rh/httpd24/root/var/www/html/nextcloud/.htaccess'
+          #semanage fcontext -a -t httpd_sys_rw_content_t '/opt/rh/httpd24/root/var/www/html/nextcloud/.user.ini'
+          restorecon -Rp '/opt/rh/httpd24/root/var/www/html/nextcloud/'
+
+          # Really ugly way of creating nextcloud httpd configuration
+          touch /etc/httpd/conf.d/nextcloud.conf
+          echo 'Alias /nextcloud "/opt/rh/httpd24/root/var/www/html/nextcloud/"' >> /opt/rh/httpd24/root/etc/httpd/conf.d/nextcloud.conf
+          echo '<Directory /opt/rh/httpd24/root/var/www/html/nextcloud/>' >> /opt/rh/httpd24/root/etc/httpd/conf.d/nextcloud.conf
+          echo '  Options +FollowSymlinks' >> /opt/rh/httpd24/root/etc/httpd/conf.d/nextcloud.conf
+          echo '  AllowOverride All' >> /opt/rh/httpd24/root/etc/httpd/conf.d/nextcloud.conf
+          echo ' <IfModule mod_dav.c>' >> /opt/rh/httpd24/root/etc/httpd/conf.d/nextcloud.conf
+          echo '  Dav off' >> /opt/rh/httpd24/root/etc/httpd/conf.d/nextcloud.conf
+          echo ' </IfModule>' >> /opt/rh/httpd24/root/etc/httpd/conf.d/nextcloud.conf
+          echo ' SetEnv HOME /opt/rh/httpd24/root/var/www/html/nextcloud' >> /opt/rh/httpd24/root/etc/httpd/conf.d/nextcloud.conf
+          echo ' SetEnv HTTP_HOME /opt/rh/httpd24/root/var/www/html/nextcloud' >> /opt/rh/httpd24/root/etc/httpd/conf.d/nextcloud.conf
+          echo '</Directory>' >> /opt/rh/httpd24/root/etc/httpd/conf.d/nextcloud.conf
+
+          # Start/enable systemd units
+          systemctl start rh-mariadb102-mariadb
+          systemctl enable rh-mariadb102-mariadb
+          systemctl start httpd24-httpd
+          systemctl enable httpd24-httpd
+
+          # Harden mysql and set root password
+          source /opt/rh/rh-mariadb102/enable
+          mysqladmin -u root password '${DBPassword}'
+          mysql -u root --password='${DBPassword}' -e "DROP USER ''@'localhost'"
+          mysql -u root --password='${DBPassword}' -e "DROP USER ''@'$(hostname)'"
+          mysql -u root --password='${DBPassword}' -e "DROP DATABASE test"
+          mysql -u root --password='${DBPassword}' -e "DELETE FROM mysql.user WHERE User='root' AND Host NOT IN ('localhost', '127.0.0.1', '::1')"
+          mysql -u root --password='${DBPassword}' -e "FLUSH PRIVILEGES"
